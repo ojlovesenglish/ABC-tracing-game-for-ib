@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Massive Letter Tracing</title>
+    
+    <!-- Add Google Fonts: Andika (Literacy font matching textbook style) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Andika:ital,wght@0,400;0,700;1,400;1,700&display=swap" rel="stylesheet">
+    
+    <!-- Add Canvas Confetti Library -->
+    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #FAFAFA;
+            /* Update to use Andika */
+            font-family: 'Andika', 'Segoe UI', Tahoma, sans-serif;
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-touch-callout: none;
+        }
+
+        #controls {
+            position: absolute;
+            top: 20px;
+            left: 0;
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 15px;
+            z-index: 10;
+            padding: 0 10px;
+            box-sizing: border-box;
+        }
+
+        select, button {
+            font-size: 20px;
+            padding: 10px 20px;
+            border-radius: 12px;
+            font-weight: bold;
+            color: #333;
+            cursor: pointer;
+            outline: none;
+        }
+
+        button:active {
+            transform: translateY(2px);
+            box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+        }
+
+        #clearBtn { border-color: #FF8A65; color: #D84315; }
+        #checkBtn { border-color: #81C784; color: #2E7D32; background-color: #E8F5E9; }
+
+        #canvas-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+        
+        #drawCanvas { touch-action: none; z-index: 5; }
+        #hiddenCanvas { display: none; } /* Used only for pixel evaluation */
+
+        /* Modal Feedback */
+        #feedbackModal {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%) scale(0.8);
+            background: white;
+            padding: 40px 60px;
+            border-radius: 30px;
+            box-shadow: 0 15px 35px rgba(0,0,0,0.2);
+            text-align: center;
+            z-index: 20;
+            opacity: 0;
+            pointer-events: none;
+            transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+
+        #feedbackModal.show {
+            opacity: 1;
+            transform: translate(-50%, -50%) scale(1);
+            pointer-events: auto;
+        }
+
+        #feedbackIcon { font-size: 100px; margin-bottom: 20px; }
+        #feedbackText { font-size: 40px; font-weight: bold; color: #333; margin: 0; }
+        
+        #closeModal {
+            margin-top: 30px;
+            background: #2196F3;
+            color: white;
+            border: none;
+            font-size: 24px;
+            padding: 15px 40px;
+            border-radius: 20px;
+        }
+
+    </style>
+</head>
+<body>
+
+    <div id="controls">
+        <select id="caseSelect">
+            <option value="both">Upper & Lower</option>
+            <option value="upper">A-Z Only</option>
+            <option value="lower">a-z Only</option>
+        </select>
+        <select id="orderSelect">
+            <option value="sequential">A-Z Order</option>
+            <option value="random">Random</option>
+        </select>
+        <select id="letterSelect">
+            <!-- Populated by JavaScript -->
+        </select>
+        <button id="clearBtn">Clear</button>
+        <button id="checkBtn">Check!</button>
+    </div>
+
+    <div id="canvas-container">
+        <canvas id="guideCanvas"></canvas>
+        <canvas id="hiddenCanvas"></canvas>
+        <canvas id="drawCanvas"></canvas>
+    </div>
+
+    <div id="feedbackModal">
+        <div id="feedbackIcon">⭐</div>
+        <p id="feedbackText">Great Job!</p>
+        <button id="closeModal">OK</button>
+    </div>
+
+    <script>
+        const guideCanvas = document.getElementById('guideCanvas');
+        const drawCanvas = document.getElementById('drawCanvas');
+        const hiddenCanvas = document.getElementById('hiddenCanvas');
+        
+        // Restore missing canvas context variables
+        const ctxGuide = guideCanvas.getContext('2d');
+        const ctxDraw = drawCanvas.getContext('2d', { willReadFrequently: true });
+        const ctxHidden = hiddenCanvas.getContext('2d', { willReadFrequently: true });
+        
+        const caseSelect = document.getElementById('caseSelect');
+        const orderSelect = document.getElementById('orderSelect');
+        const letterSelect = document.getElementById('letterSelect');
+        const clearBtn = document.getElementById('clearBtn');
+        const checkBtn = document.getElementById('checkBtn');
+        const modal = document.getElementById('feedbackModal');
+        const closeModal = document.getElementById('closeModal');
+        const feedbackIcon = document.getElementById('feedbackIcon');
+        const feedbackText = document.getElementById('feedbackText');
+
+        let isDrawing = false;
+        let fontString = "";
+        let currentLetter = "";
+        let baseY = 0;
+        
+        // Track completed letters for the "Set Complete" flourish
+        let completedLetters = new Set();
+
+        const uppercaseLetters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+        const lowercaseLetters = "abcdefghijklmnopqrstuvwxyz".split("");
+
+        function populateLetterSelect() {
+            letterSelect.innerHTML = "";
+            const mode = caseSelect.value;
+            let letters = [];
+
+            if (mode === "upper" || mode === "both") {
+                letters = letters.concat(uppercaseLetters);
+            }
+            if (mode === "lower" || mode === "both") {
+                letters = letters.concat(lowercaseLetters);
+            }
+
+            letters.forEach(l => {
+                const opt = document.createElement('option');
+                opt.value = l;
+                opt.textContent = l;
+                letterSelect.appendChild(opt);
+            });
+        }
+
+        function advanceLetter() {
+            const options = Array.from(letterSelect.options);
+            let nextIndex = 0;
+            
+            if (orderSelect.value === 'random') {
+                nextIndex = Math.floor(Math.random() * options.length);
+                // Try to avoid showing the exact same letter twice in a row
+                if (nextIndex === letterSelect.selectedIndex && options.length > 1) {
+                    nextIndex = (nextIndex + 1) % options.length;
+                }
+            } else {
+                nextIndex = (letterSelect.selectedIndex + 1) % options.length;
+            }
+            
+            letterSelect.selectedIndex = nextIndex;
+            drawBackground();
+        }
+
+        // --- Confetti Flourishes ---
+        function fireConfetti(type) {
+            if (type === 'success') {
+                confetti({
+                    particleCount: 100,
+                    spread: 70,
+                    origin: { y: 0.6 },
+                    zIndex: 100
+                });
+            } else if (type === 'completion') {
+                const duration = 3000;
+                const end = Date.now() + duration;
+
+                (function frame() {
+                    confetti({
+                        particleCount: 5,
+                        angle: 60,
+                        spread: 55,
+                        origin: { x: 0 },
+                        colors: ['#26ccff', '#a25afd', '#ff5e7e', '#88ff5a', '#fcff42', '#ffa62d', '#ff36ff'],
+                        zIndex: 100
+                    });
+                    confetti({
+                        particleCount: 5,
+                        angle: 120,
+                        spread: 55,
+                        origin: { x: 1 },
+                        colors: ['#26ccff', '#a25afd', '#ff5e7e', '#88ff5a', '#fcff42', '#ffa62d', '#ff36ff'],
+                        zIndex: 100
+                    });
+
+                    if (Date.now() < end) {
+                        requestAnimationFrame(frame);
+                    }
+                }());
+            }
+        }
+
+        function resize() {
+            const w = window.innerWidth;
+            const h = window.innerHeight;
+            
+            // Prevent sizing canvases to 0 which causes IndexSizeError
+            if (w === 0 || h === 0) return; 
+
+            [guideCanvas, drawCanvas, hiddenCanvas].forEach(c => {
+                c.width = w;
+                c.height = h;
+            });
+            
+            ctxDraw.lineCap = 'round';
+            ctxDraw.lineJoin = 'round';
+            ctxDraw.lineWidth = 45; // Very thick stroke for student drawing
+            ctxDraw.strokeStyle = 'rgba(33, 150, 243, 0.8)'; // Semi-transparent Blue
+
+            drawBackground();
+        }
+
+        function drawBackground() {
+            ctxGuide.clearRect(0, 0, guideCanvas.width, guideCanvas.height);
+            ctxHidden.clearRect(0, 0, hiddenCanvas.width, hiddenCanvas.height);
+
+            const w = guideCanvas.width;
+            const h = guideCanvas.height;
+            
+            // Calculate MASSIVE lines. Line height is 15% of screen height.
+            // Total 4-line guide takes up 45% of the iPad screen vertically.
+            const lineHeight = h * 0.15; 
+            const midY = h / 2;
+            const topY = midY - lineHeight;
+            baseY = midY + lineHeight;
+            const dropY = baseY + lineHeight;
+
+            // Draw Guides
+            ctxGuide.lineWidth = 4;
+            
+            // Top (Solid Gray)
+            ctxGuide.strokeStyle = '#B0BEC5';
+            ctxGuide.setLineDash([]);
+            ctxGuide.beginPath(); ctxGuide.moveTo(0, topY); ctxGuide.lineTo(w, topY); ctxGuide.stroke();
+
+            // Middle (Dashed Gray)
+            ctxGuide.setLineDash([20, 20]);
+            ctxGuide.beginPath(); ctxGuide.moveTo(0, midY); ctxGuide.lineTo(w, midY); ctxGuide.stroke();
+
+            // Baseline (Solid Red)
+            ctxGuide.strokeStyle = '#E57373';
+            ctxGuide.setLineDash([]);
+            ctxGuide.beginPath(); ctxGuide.moveTo(0, baseY); ctxGuide.lineTo(w, baseY); ctxGuide.stroke();
+
+            // Drop (Solid Gray)
+            ctxGuide.strokeStyle = '#B0BEC5';
+            ctxGuide.beginPath(); ctxGuide.moveTo(0, dropY); ctxGuide.lineTo(w, dropY); ctxGuide.stroke();
+
+            // Draw the letter
+            currentLetter = letterSelect.value;
+            // Scale font size to fit exactly between the lines
+            const fontSize = lineHeight * 2.8; 
+            // Update to use Andika
+            fontString = `bold ${fontSize}px 'Andika', sans-serif`;
+            
+            // 1. Draw faded letter on Guide Canvas (for student to see)
+            ctxGuide.font = fontString;
+            ctxGuide.fillStyle = 'rgba(200, 200, 200, 0.5)';
+            ctxGuide.textAlign = 'center';
+            ctxGuide.textBaseline = 'alphabetic';
+            ctxGuide.fillText(currentLetter, w / 2, baseY);
+
+            // 2. Draw thick solid letter on Hidden Canvas (for pixel evaluation)
+            ctxHidden.font = fontString;
+            ctxHidden.fillStyle = 'black'; // Solid black for easy pixel detection
+            ctxHidden.textAlign = 'center';
+            ctxHidden.textBaseline = 'alphabetic';
+            ctxHidden.fillText(currentLetter, w / 2, baseY);
+            
+            // Thicken the target area in hidden canvas to make scoring forgiving
+            // We are doubling this from 40 to 80 to create a massive invisible "safe zone"
+            ctxHidden.lineWidth = 80;
+            ctxHidden.strokeStyle = 'black';
+            ctxHidden.strokeText(currentLetter, w / 2, baseY);
+        }
+
+        // --- Drawing Logic ---
+
+        function startDrawing(e) {
+            isDrawing = true;
+            const pos = getPos(e);
+            ctxDraw.beginPath();
+            ctxDraw.moveTo(pos.x, pos.y);
+            e.preventDefault();
+        }
+
+        function draw(e) {
+            if (!isDrawing) return;
+            const pos = getPos(e);
+            ctxDraw.lineTo(pos.x, pos.y);
+            ctxDraw.stroke();
+            e.preventDefault();
+        }
+
+        function stopDrawing(e) {
+            isDrawing = false;
+            ctxDraw.closePath();
+        }
+
+        function getPos(e) {
+            const rect = drawCanvas.getBoundingClientRect();
+            let x, y;
+            if (e.touches && e.touches.length > 0) {
+                x = e.touches[0].clientX - rect.left;
+                y = e.touches[0].clientY - rect.top;
+            } else {
+                x = e.clientX - rect.left;
+                y = e.clientY - rect.top;
+            }
+            return { x, y };
+        }
+
+        // --- Evaluation Logic ---
+        function evaluateTracing() {
+            const w = drawCanvas.width;
+            const h = drawCanvas.height;
+            
+            // Fix: Prevent IndexSizeError if the canvas has not initialized its size properly
+            if (w === 0 || h === 0) {
+                return; 
+            }
+            
+            // Get pixel data
+            const targetImageData = ctxHidden.getImageData(0, 0, w, h).data;
+            const drawnImageData = ctxDraw.getImageData(0, 0, w, h).data;
+            
+            let targetPixelCount = 0;
+            let coveredPixelCount = 0;
+            let strayPixelCount = 0;
+
+            // Loop through pixels (jumping by 4 to check Alpha channel only)
+            // To improve performance, we check every 4th pixel (stride = 16)
+            for (let i = 3; i < targetImageData.length; i += 16) {
+                const isTarget = targetImageData[i] > 100; // Has ink on hidden canvas
+                const isDrawn = drawnImageData[i] > 100;   // Has ink on student canvas
+
+                if (isTarget) {
+                    targetPixelCount++;
+                    if (isDrawn) coveredPixelCount++;
+                } else if (isDrawn) {
+                    strayPixelCount++;
+                }
+            }
+
+            if (targetPixelCount === 0) return; // Prevent divide by zero
+
+            const coverageRatio = coveredPixelCount / targetPixelCount;
+            const penaltyRatio = strayPixelCount / targetPixelCount;
+
+            // SCORING THRESHOLDS (Drastically relaxed for elementary students)
+            // 0.25 = They only need to cover 25% of the newly enlarged safe zone
+            // 2.00 = They can draw twice as much outside the lines as inside before failing
+            const passed = (coverageRatio > 0.25 && penaltyRatio < 2.00);
+
+            if (passed) {
+                completedLetters.add(currentLetter);
+                const isSetComplete = completedLetters.size === letterSelect.options.length;
+                showFeedback(true, isSetComplete);
+            } else {
+                showFeedback(false, false);
+            }
+        }
+
+        function showFeedback(passed, isSetComplete) {
+            if (passed) {
+                if (isSetComplete) {
+                    feedbackIcon.textContent = "🏆";
+                    feedbackText.textContent = "Set Complete!";
+                    feedbackText.style.color = "#F57F17"; // Gold-orange
+                    fireConfetti('completion');
+                } else {
+                    feedbackIcon.textContent = "🌟";
+                    feedbackText.textContent = "Excellent!";
+                    feedbackText.style.color = "#2E7D32";
+                    fireConfetti('success');
+                }
+            } else {
+                feedbackIcon.textContent = "👀";
+                feedbackText.textContent = "Try tracing the lines carefully!";
+                feedbackText.style.color = "#D84315";
+            }
+            modal.classList.add('show');
+        }
+
+        // --- Event Listeners ---
+        drawCanvas.addEventListener('mousedown', startDrawing);
+        drawCanvas.addEventListener('mousemove', draw);
+        window.addEventListener('mouseup', stopDrawing);
+
+        drawCanvas.addEventListener('touchstart', startDrawing, {passive: false});
+        drawCanvas.addEventListener('touchmove', draw, {passive: false});
+        window.addEventListener('touchend', stopDrawing);
+
+        letterSelect.addEventListener('change', () => {
+            ctxDraw.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+            drawBackground();
+        });
+
+        clearBtn.addEventListener('click', () => {
+            ctxDraw.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+        });
+
+        checkBtn.addEventListener('click', evaluateTracing);
+
+        caseSelect.addEventListener('change', () => {
+            completedLetters.clear(); // Reset progress when changing sets
+            populateLetterSelect();
+            ctxDraw.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+            drawBackground();
+        });
+
+        closeModal.addEventListener('click', () => {
+            modal.classList.remove('show');
+            // Auto clear and advance
+            if(feedbackText.textContent === "Excellent!") {
+                ctxDraw.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+                advanceLetter();
+            } else if (feedbackText.textContent === "Set Complete!") {
+                ctxDraw.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+                completedLetters.clear(); // Reset for next round
+                advanceLetter();
+            }
+        });
+
+        window.addEventListener('resize', resize);
+        populateLetterSelect(); // Initialize the dropdown options
+        
+        // Wait for the custom literacy font to load before calculating canvas layout
+        document.fonts.ready.then(() => {
+            resize(); // Init
+        });
+    </script>
+</body>
+</html>
